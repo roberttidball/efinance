@@ -2,6 +2,7 @@ import os
 from typing import Any, Dict, Optional
 
 import pandas as pd
+import requests
 
 from ..shared import session
 
@@ -27,16 +28,28 @@ def _clean_params(params: Dict[str, Any]) -> Dict[str, Any]:
 
 def _request(path: str, api_key: Optional[str] = None, **params: Any) -> Any:
     headers = {}
-    key = _api_key(api_key)
+    key = (_api_key(api_key) or "").strip()
+    if any(ch.isspace() or not ch.isprintable() for ch in key):
+        # Never echo the key itself in the error.
+        raise ValueError(
+            "FXMacroData API key contains whitespace or control characters"
+        )
     if key:
         headers["X-API-Key"] = key
 
+    # Redirects are not followed so the key is never sent to another host.
     response = session.get(
         FXMACRODATA_BASE_URL + path,
         params=_clean_params(params),
         headers=headers,
         timeout=30,
+        allow_redirects=False,
     )
+    if 300 <= response.status_code < 400:
+        raise requests.HTTPError(
+            "FXMacroData request was redirected (HTTP %s)" % response.status_code,
+            response=response,
+        )
     response.raise_for_status()
     return response.json()
 
