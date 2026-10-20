@@ -26,6 +26,14 @@ def _clean_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
+def _validated_payload(payload: Any) -> Any:
+    if not isinstance(payload, (dict, list)):
+        raise ValueError("FXMacroData returned an invalid response")
+    if isinstance(payload, dict) and ("detail" in payload or "error" in payload):
+        raise ValueError("FXMacroData returned an error response")
+    return payload
+
+
 def _request(path: str, api_key: Optional[str] = None, **params: Any) -> Any:
     headers = {}
     key = (_api_key(api_key) or "").strip()
@@ -38,23 +46,36 @@ def _request(path: str, api_key: Optional[str] = None, **params: Any) -> Any:
         headers["X-API-Key"] = key
 
     # Redirects are not followed so the key is never sent to another host.
-    response = session.get(
-        FXMACRODATA_BASE_URL + path,
-        params=_clean_params(params),
-        headers=headers,
-        timeout=30,
-        allow_redirects=False,
-    )
+    try:
+        response = session.get(
+            FXMACRODATA_BASE_URL + path,
+            params=_clean_params(params),
+            headers=headers,
+            timeout=30,
+            allow_redirects=False,
+        )
+    except requests.RequestException:
+        raise requests.RequestException("FXMacroData request failed") from None
     if 300 <= response.status_code < 400:
         raise requests.HTTPError(
             "FXMacroData request was redirected (HTTP %s)" % response.status_code,
             response=response,
         )
-    response.raise_for_status()
-    return response.json()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError:
+        raise requests.HTTPError(
+            "FXMacroData request failed (HTTP %s)" % response.status_code
+        ) from None
+    try:
+        payload = response.json()
+    except ValueError:
+        raise ValueError("FXMacroData returned an invalid response") from None
+    return _validated_payload(payload)
 
 
 def _frame(payload: Any) -> pd.DataFrame:
+    payload = _validated_payload(payload)
     if isinstance(payload, list):
         return pd.json_normalize(payload)
 
@@ -84,8 +105,6 @@ def _frame(payload: Any) -> pd.DataFrame:
                         df[meta_key] = meta_value
                 return df
         return pd.json_normalize(payload)
-
-    return pd.DataFrame({"value": [payload]})
 
 
 def get_data_catalogue(
